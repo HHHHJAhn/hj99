@@ -27,8 +27,9 @@ steering_angle = 0.0
 L = new_size[0]  # 가로 길이 = 축간 거리로 사용
 
 # 주차 영역
-parking_rect = pygame.Rect(200, 100, 80, 40)
-apriltag_rect = pygame.Rect(220, 80, 40, 20)
+parking_rect = pygame.Rect(380, 100, 40, 90)
+apriltag_rect = pygame.Rect(390, 80, 20, 10)  # 주차구역 윗쪽 중앙
+
 
 clock = pygame.time.Clock()
 running = True
