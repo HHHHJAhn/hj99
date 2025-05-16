@@ -1,141 +1,139 @@
 # main.py
 import pygame
 import math
-from path_planning import calc_optimal_path   # RS 경로 생성
-from motion_planning import generate_path     # Motion Planning 경로 생성
+from path_planning import calc_optimal_path
+from tracking import RSTracker
 
-# =============================================================================
-# 1) Pygame 초기 설정
-# =============================================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# 1) 초기화 & 상수
+# ─────────────────────────────────────────────────────────────────────────────
 pygame.init()
-WIDTH, HEIGHT = 800, 600
-screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("Multiple Path Planning Demo")
+W, H = 800, 600
+screen = pygame.display.set_mode((W, H))
+pygame.display.set_caption("RS Forward/Reverse Parking (Auto-Stop)")
 
-# 색 정의
-WHITE = (255, 255, 255)
-GRAY  = (200, 200, 200)
-BLACK = (  0,   0,   0)
-BLUE  = (  0,   0, 255)
-RED   = (255,   0,   0)
-
+WHITE, GRAY, BLACK = (255,255,255), (200,200,200), (0,0,0)
+BLUE, GREEN, RED  = (0,0,255),    (0,200,0),    (255,0,0)
 font = pygame.font.Font(None, 24)
 
-# 자동차 이미지 로드 & 크기 조정 (한 번만)
-car_img_orig = pygame.image.load("car.png")
-car_img_orig = pygame.transform.scale(car_img_orig, (50, 25))
+# 차량 이미지
+car_img = pygame.image.load("car.png")
+car_img = pygame.transform.scale(car_img, (50,25))
 
-# =============================================================================
-# 2) 자동차 & 주차장 위치 (픽셀)
-# =============================================================================
-car_px, car_py = 100.0, 300.0
-car_yaw_deg    = 0.0
+# 초기 위치
+px, py, yaw_deg = 100.0, 300.0, 0.0
 
-parking_rect   = pygame.Rect(650, 150, 40, 90)
-apriltag_rect  = pygame.Rect(660, 130, 20, 10)
+# 주차 슬롯
+slot = pygame.Rect(650, 150, 40, 90)
+tag  = pygame.Rect(660, 130, 20, 10)
 
-# =============================================================================
-# 3) 월드 ↔ 픽셀 변환
-# =============================================================================
-M2P = 50.0  # 1 m = 50 px
-def world_to_pix(wx, wy):
-    return wx * M2P, HEIGHT - wy * M2P
+# 픽셀↔월드 변환
+M2P = 50.0
+def w2p(wx, wy): return wx*M2P, H-wy*M2P
+def p2w(px, py): return px/M2P, (H-py)/M2P
 
-def pix_to_world(px, py):
-    return px / M2P, (HEIGHT - py) / M2P
+sx, sy = p2w(px, py)
+syaw   = math.radians(-yaw_deg)
+gx, gy = p2w(slot.centerx, slot.bottom)
+gyaw   = -math.pi/2
+maxc   = 0.1
 
-# =============================================================================
-# 4) 시작·목표 상태 정의 (월드 좌표, m, rad)
-# =============================================================================
-sx, sy = pix_to_world(car_px, car_py)
-syaw   = math.radians(-car_yaw_deg)
+# 버튼
+btn_path  = pygame.Rect( 10, H-50,120,30)
+btn_reset = pygame.Rect(150, H-50,120,30)
+btn_go    = pygame.Rect(290, H-50,120,30)
+t_path    = font.render("Make RS Path",    True, BLACK)
+t_reset   = font.render("Reset",            True, BLACK)
+t_go      = font.render("Start Parking",   True, BLACK)
 
-goal_px = parking_rect.centerx
-goal_py = parking_rect.bottom
-gx, gy  = pix_to_world(goal_px, goal_py)
-gyaw    = -math.pi / 2
+# 상태
+way_px    = []   # [(x_px,y_px), ...]
+way_dir   = []   # [1 or -1, ...]
+tracker   = None
+made_path = False
 
-max_curvature = 0.1
+# 멈춤 임계값 (픽셀)
+stop_threshold = 5
 
-# RS용
-rs_waypoints = []
-show_rs      = False
-
-# MotionPlanning용
-mp_waypoints = []
-show_mp      = False
-
-# =============================================================================
-# 5) 버튼 정의
-# =============================================================================
-btn_rs    = pygame.Rect( 10, HEIGHT - 50, 120, 30)
-btn_mp    = pygame.Rect(150, HEIGHT - 50, 120, 30)
-btn_reset = pygame.Rect(290, HEIGHT - 50, 120, 30)
-
-txt_rs    = font.render("Show RS Path", True, BLACK)
-txt_mp    = font.render("Show MP Path", True, BLACK)
-txt_reset = font.render("Reset Paths",  True, BLACK)
-
-# =============================================================================
-# 6) 메인 루프
-# =============================================================================
-clock   = pygame.time.Clock()
+clock = pygame.time.Clock()
 running = True
-
 while running:
     for ev in pygame.event.get():
         if ev.type == pygame.QUIT:
             running = False
 
         elif ev.type == pygame.MOUSEBUTTONDOWN:
-            if btn_rs.collidepoint(ev.pos):
-                # RS 경로 계산
-                path = calc_optimal_path(sx, sy, syaw, gx, gy, gyaw, max_curvature)
-                rs_waypoints = [world_to_pix(x, y) for x, y in zip(path.x, path.y)]
-                show_rs = True
+            # ─── Make RS Path ───────────────────────────────────────────
+            if btn_path.collidepoint(ev.pos):
+                path = calc_optimal_path(sx, sy, syaw, gx, gy, gyaw, maxc)
 
-            elif btn_mp.collidepoint(ev.pos):
-                # Motion Planning 경로 계산
-                s = [
-                    [sx, sy, math.degrees(syaw)],
-                    [gx, gy, math.degrees(gyaw)]
-                ]
-                px_segs, py_segs, _, _, x_all, y_all = generate_path(s)
-                mp_waypoints = [world_to_pix(x, y) for x, y in zip(x_all, y_all)]
-                show_mp = True
+                raw = [w2p(x,y) for x,y in zip(path.x, path.y)]
+                dirs = list(path.directions)
 
+                # 슬롯 깊이만큼 연장
+                if len(raw) >= 2:
+                    x1,y1 = raw[-2]
+                    x2,y2 = raw[-1]
+                    dx,dy = x2-x1, y2-y1
+                    norm = math.hypot(dx,dy) or 1.0
+                    ux,uy = dx/norm, dy/norm
+                    depth = slot.height
+                    raw.append((x2+ux*depth, y2+uy*depth))
+                    dirs.append(dirs[-1])
+
+                way_px    = raw
+                way_dir   = dirs
+                made_path = True
+                tracker   = None
+
+            # ─── Reset ───────────────────────────────────────────────────
             elif btn_reset.collidepoint(ev.pos):
-                # 경로 리셋
-                show_rs = False
-                show_mp = False
-                rs_waypoints.clear()
-                mp_waypoints.clear()
+                way_px.clear()
+                way_dir.clear()
+                made_path = False
+                tracker   = None
+                px,py,yaw_deg = 100.0, 300.0, 0.0
 
-    # 배경
+            # ─── Start Parking ────────────────────────────────────────────
+            elif btn_go.collidepoint(ev.pos) and made_path:
+                tracker = RSTracker(
+                    way_px, way_dir,
+                    lookahead=30.0,
+                    wheelbase=25.0,
+                    speed=2.5
+                )
+
+    # ─── 화면 그리기 ───────────────────────────────────────────────────────
     screen.fill(WHITE)
+    pygame.draw.rect(screen, GRAY, slot, 2)
+    pygame.draw.rect(screen, RED,  tag)
 
-    # (1) 주차공간 & ApriTag
-    pygame.draw.rect(screen, GRAY, parking_rect, 2)
-    pygame.draw.rect(screen, RED, apriltag_rect)
+    for b,t,c in [
+        (btn_path,  t_path,  GRAY),
+        (btn_reset, t_reset, GRAY),
+        (btn_go,    t_go,    GREEN),
+    ]:
+        pygame.draw.rect(screen, c, b)
+        screen.blit(t, (b.x+10, b.y+6))
 
-    # (2) 버튼
-    pygame.draw.rect(screen, GRAY, btn_rs)
-    screen.blit(txt_rs,    (btn_rs.x + 10,    btn_rs.y + 6))
-    pygame.draw.rect(screen, GRAY, btn_mp)
-    screen.blit(txt_mp,    (btn_mp.x + 10,    btn_mp.y + 6))
-    pygame.draw.rect(screen, GRAY, btn_reset)
-    screen.blit(txt_reset, (btn_reset.x + 10, btn_reset.y + 6))
+    if made_path and len(way_px) > 1:
+        pygame.draw.lines(screen, BLUE, False, way_px, 2)
 
-    # (3) 경로 그리기
-    if show_rs and len(rs_waypoints) >= 2:
-        pygame.draw.lines(screen, BLUE, False, rs_waypoints, 2)
-    if show_mp and len(mp_waypoints) >= 2:
-        pygame.draw.lines(screen, RED, False, mp_waypoints, 2)
+    # ─── 주차 업데이트 ───────────────────────────────────────────────────
+    if tracker:
+        px, py, yaw_deg, done = tracker.step(px, py, math.radians(yaw_deg))
 
-    # (4) 자동차 (고정)
-    rotated = pygame.transform.rotate(car_img_orig, -car_yaw_deg)
-    rect    = rotated.get_rect(center=(car_px, car_py))
-    screen.blit(rotated, rect.topleft)
+        # 슬롯 중앙에 도달했으면 즉시 멈추고 스냅
+        dx = px - slot.centerx
+        dy = py - slot.centery
+        if math.hypot(dx, dy) < stop_threshold:
+            px, py = slot.centerx, slot.centery
+            tracker = None
+
+    # ─── 차량 그리기 ───────────────────────────────────────────────────────
+    rot = pygame.transform.rotate(car_img, -yaw_deg)
+    r   = rot.get_rect(center=(px, py))
+    screen.blit(rot, r.topleft)
 
     pygame.display.flip()
     clock.tick(30)
